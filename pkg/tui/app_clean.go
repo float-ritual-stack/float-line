@@ -3,12 +3,13 @@ package tui
 import (
 	"fmt"
 	"net/url"
+	"strings"
 
 	"github.com/charmbracelet/bubbles/list"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/glamour"
 	"github.com/charmbracelet/lipgloss"
+
 	"github.com/evanschultz/float-rw-client/pkg/api"
 	"github.com/evanschultz/float-rw-client/pkg/models"
 	"github.com/evanschultz/float-rw-client/pkg/outliner"
@@ -51,6 +52,7 @@ type CleanModel struct {
 	highlightList list.Model
 	detailView    viewport.Model
 	noteOutliner  outliner.Outliner
+	parser        *outliner.Parser
 
 	// UI state
 	loading  bool
@@ -86,6 +88,7 @@ func NewCleanModel(apiClient *api.Client) CleanModel {
 		highlightList: highlightList,
 		detailView:    detailView,
 		noteOutliner:  noteOutliner,
+		parser:        outliner.NewParser(),
 		editMode:      ModeView,
 	}
 }
@@ -117,6 +120,10 @@ func (m CleanModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				// Save note
 				if m.currentHighlight != nil {
 					m.currentHighlight.Note = m.noteOutliner.GetContent()
+
+					// Trigger consciousness capture before saving
+					m.noteOutliner.TriggerConsciousnessCapture()
+
 					m.editMode = ModeView
 					m.noteOutliner.Blur()
 					// TODO: Save to API
@@ -146,18 +153,29 @@ func (m CleanModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case "enter":
 				return m.handleEnter()
 
-			case "esc":
-				m.focusLeft()
-
 			case "e":
 				// Enter edit mode when in detail panel
 				if m.focus == FocusDetail && m.currentHighlight != nil {
 					m.editMode = ModeEdit
 					m.noteOutliner.Focus()
-					// Load current note into outliner
-					if m.currentHighlight.Note != "" {
-						m.noteOutliner.SetContent(m.currentHighlight.Note)
-					}
+					// Load structured content into outliner
+					content := m.highlightToOutlinerFormat(m.currentHighlight)
+					m.noteOutliner.SetContent(content)
+				}
+
+			case "ctrl+s":
+				// Save outliner content when in edit mode
+				if m.editMode == ModeEdit && m.currentHighlight != nil {
+					return m, m.saveOutlinerContent()
+				}
+
+			case "esc":
+				if m.editMode == ModeEdit {
+					// Cancel edit mode
+					m.editMode = ModeView
+					m.noteOutliner.Blur()
+				} else {
+					m.focusLeft()
 				}
 
 			default:
@@ -174,9 +192,17 @@ func (m CleanModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					cmds = append(cmds, cmd)
 
 				case FocusDetail:
-					newView, cmd := m.detailView.Update(msg)
-					m.detailView = newView
-					cmds = append(cmds, cmd)
+					if m.editMode == ModeEdit {
+						// Update outliner when in edit mode
+						newOutliner, cmd := m.noteOutliner.Update(msg)
+						m.noteOutliner = newOutliner
+						cmds = append(cmds, cmd)
+					} else {
+						// Update viewport when in view mode
+						newView, cmd := m.detailView.Update(msg)
+						m.detailView = newView
+						cmds = append(cmds, cmd)
+					}
 				}
 			}
 		}
@@ -201,7 +227,20 @@ func (m CleanModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Don't auto-focus - let user navigate manually
 
 	case highlightRenderedMsg:
-		m.detailView.SetContent(msg.content)
+		if m.editMode == ModeEdit {
+			// Don't reload content if already in edit mode to avoid duplication
+			// Content was already loaded when entering edit mode
+		} else {
+			// Show as read-only in viewport
+			m.detailView.SetContent(msg.content)
+		}
+
+	case highlightSavedMsg:
+		// Exit edit mode after successful save
+		m.editMode = ModeView
+		m.noteOutliner.Blur()
+		// Refresh the detail view with updated content
+		return m, m.renderHighlightDetail()
 
 	case errMsg:
 		m.err = msg.err
@@ -449,29 +488,103 @@ func (m CleanModel) renderHighlightDetail() tea.Cmd {
 			return nil
 		}
 
-		content := fmt.Sprintf("# Highlight\n\n> %s\n\n", m.currentHighlight.Text)
+		// Convert to structured outliner format
+		content := m.highlightToOutlinerFormat(m.currentHighlight)
 
-		if m.currentBook != nil {
-			content += fmt.Sprintf("**Book:** %s by %s\n\n", m.currentBook.Title, m.currentBook.Author)
+		return highlightRenderedMsg{content: content}
+	}
+}
+
+// highlightToOutlinerFormat converts a Readwise highlight to structured outliner format
+func (m CleanModel) highlightToOutlinerFormat(highlight *models.Highlight) string {
+	var lines []string
+
+	// Main highlight section
+	lines = append(lines, "• highlight:: "+highlight.Text)
+
+	// Add book info as sub-bullet if available
+	if m.currentBook != nil {
+		lines = append(lines, "  • book:: "+m.currentBook.Title+" by "+m.currentBook.Author)
+	}
+
+	// Add tags if present
+	if len(highlight.Tags) > 0 {
+		tagNames := make([]string, len(highlight.Tags))
+		for i, tag := range highlight.Tags {
+			tagNames[i] = tag.Name
+		}
+		lines = append(lines, "• tags:: "+strings.Join(tagNames, ", "))
+	}
+
+	// Add note section
+	if highlight.Note != "" {
+		lines = append(lines, "• note:: "+highlight.Note)
+
+		// If note has multiple lines, make them sub-bullets
+		noteLines := strings.Split(highlight.Note, "\n")
+		if len(noteLines) > 1 {
+			// Replace the single line note with structured version
+			lines[len(lines)-1] = "• note::"
+			for _, noteLine := range noteLines {
+				if strings.TrimSpace(noteLine) != "" {
+					lines = append(lines, "  • "+strings.TrimSpace(noteLine))
+				}
+			}
+		}
+	} else {
+		lines = append(lines, "• note::")
+		lines = append(lines, "  • *Add your thoughts here*")
+	}
+
+	// Add metadata section
+	lines = append(lines, "• meta::")
+	if highlight.Color != "" {
+		lines = append(lines, "  • color:: "+highlight.Color)
+	}
+	if highlight.HighlightedAt != nil {
+		lines = append(lines, "  • highlighted:: "+highlight.HighlightedAt.Format("2006-01-02"))
+	}
+	lines = append(lines, "  • id:: "+fmt.Sprintf("%d", highlight.ID))
+
+	return strings.Join(lines, "\n")
+}
+
+// saveOutlinerContent parses the outliner content and saves it back to Readwise
+func (m CleanModel) saveOutlinerContent() tea.Cmd {
+	return func() tea.Msg {
+		if m.currentHighlight == nil {
+			return errMsg{fmt.Errorf("no highlight selected")}
 		}
 
-		if m.currentHighlight.Note != "" {
-			content += fmt.Sprintf("## Note\n\n%s\n\n", m.currentHighlight.Note)
-		} else {
-			content += "## Note\n\n*No note yet.*\n\n"
+		// Get content from outliner
+		content := m.noteOutliner.GetContent()
+
+		// Parse structured content
+		parsed := m.parser.Parse(content)
+
+		// Convert back to Readwise format
+		highlight, note, _ := parsed.ToReadwiseFormat()
+
+		// Update the highlight via API
+		update := models.HighlightUpdate{
+			Text: highlight,
+			Note: note,
 		}
 
-		// Render markdown
-		renderer, _ := glamour.NewTermRenderer(
-			glamour.WithAutoStyle(),
-			glamour.WithWordWrap(m.detailView.Width),
-		)
-
-		rendered, err := renderer.Render(content)
+		updatedHighlight, err := m.api.UpdateHighlight(m.currentHighlight.ID, update)
 		if err != nil {
-			rendered = content
+			return errMsg{err}
 		}
 
-		return highlightRenderedMsg{content: rendered}
+		// Update local state with the response from API
+		if updatedHighlight != nil {
+			m.currentHighlight = updatedHighlight
+		} else {
+			// Fallback to updating local state manually
+			m.currentHighlight.Text = highlight
+			m.currentHighlight.Note = note
+		}
+
+		return highlightSavedMsg{}
 	}
 }

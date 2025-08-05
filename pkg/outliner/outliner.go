@@ -1,17 +1,38 @@
 package outliner
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
+	"regexp"
 	"strings"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 )
 
-// OutlineNode represents a single line in the outline
+// OutlineNode represents a single line in the outline with consciousness metadata
 type OutlineNode struct {
-	Text  string
-	Level int // 0 = root level, 1 = indented once, etc.
+	ID          string // Unique identifier for this node
+	Text        string // Display text
+	Level       int    // 0 = root level, 1 = indented once, etc.
+	Collapsed   bool   // true if this node's children are hidden
+	HasChildren bool   // true if this node has child nodes
+
+	// Consciousness metadata
+	CreatedAt   time.Time         // When this node was created
+	ModifiedAt  time.Time         // When this node was last modified
+	PatternType string            // ctx, eureka, decision, etc. (empty for plain text)
+	Metadata    map[string]string // Additional key-value metadata
+	Captured    bool              // Whether this node has been sent to consciousness system
+
+	// Bidirectional linking
+	Links     []string // [[concept]] links found in this node's text
+	Backlinks []string // Node IDs that link to this node
+
+	// Display state
+	DetailMode bool // Whether to show full metadata in display
 }
 
 // Outliner is the main component
@@ -23,27 +44,75 @@ type Outliner struct {
 	height    int
 	focused   bool
 
-	// Styles
+	// Consciousness integration
+	parser     *Parser
+	evna       *EvnaDispatcher
+	detailMode bool // Global detail mode toggle
+
+	// FLOAT.dispatch system
+	dispatch   *FloatDispatchSystem
+	debugPanel *ConsciousnessDebugPanel
+
+	// Bidirectional linking
+	linkRegistry   map[string][]string // concept -> []nodeIDs that mention it	// Styles
 	bulletStyle    lipgloss.Style
 	textStyle      lipgloss.Style
 	cursorStyle    lipgloss.Style
 	focusedStyle   lipgloss.Style
 	unfocusedStyle lipgloss.Style
+	highlightStyle lipgloss.Style // For current row
+	treeLineStyle  lipgloss.Style // For tree connection lines
+}
+
+// generateNodeID creates a unique ID for a node
+func generateNodeID() string {
+	bytes := make([]byte, 4)
+	rand.Read(bytes)
+	return hex.EncodeToString(bytes)
+}
+
+// newNode creates a new OutlineNode with consciousness metadata
+func newNode(text string, level int) OutlineNode {
+	now := time.Now()
+	return OutlineNode{
+		ID:         generateNodeID(),
+		Text:       text,
+		Level:      level,
+		CreatedAt:  now,
+		ModifiedAt: now,
+		Metadata:   make(map[string]string),
+		Captured:   false,
+		DetailMode: false,
+		Links:      []string{},
+		Backlinks:  []string{},
+	}
 }
 
 // New creates a new outliner
 func New() Outliner {
-	return Outliner{
+	o := Outliner{
 		lines: []OutlineNode{
-			{Text: "", Level: 0}, // Start with one empty line
+			newNode("", 0), // Start with one empty line
 		},
-		cursor:    0,
-		cursorPos: 0,
+		cursor:       0,
+		cursorPos:    0,
+		detailMode:   false,
+		linkRegistry: make(map[string][]string),
+
+		// Consciousness integration
+		parser:     NewParser(),
+		evna:       NewEvnaDispatcher(),
+		dispatch:   NewFloatDispatchSystem(),
+		debugPanel: NewConsciousnessDebugPanel(),
 
 		// Default styles
-		bulletStyle: lipgloss.NewStyle().Foreground(lipgloss.Color("240")),
+		bulletStyle: lipgloss.NewStyle().Foreground(lipgloss.Color("62")),
 		textStyle:   lipgloss.NewStyle(),
-		cursorStyle: lipgloss.NewStyle().Background(lipgloss.Color("62")),
+		cursorStyle: lipgloss.NewStyle().Background(lipgloss.Color("62")).Foreground(lipgloss.Color("15")),
+		highlightStyle: lipgloss.NewStyle().
+			Background(lipgloss.Color("236")).
+			Foreground(lipgloss.Color("15")),
+		treeLineStyle: lipgloss.NewStyle().Foreground(lipgloss.Color("240")),
 		focusedStyle: lipgloss.NewStyle().
 			BorderStyle(lipgloss.RoundedBorder()).
 			BorderForeground(lipgloss.Color("62")).
@@ -53,6 +122,13 @@ func New() Outliner {
 			BorderForeground(lipgloss.Color("240")).
 			Padding(1),
 	}
+
+	// Set up error logging callback for evna dispatcher
+	o.evna.SetErrorLogger(func(msgType, content string) {
+		o.debugPanel.AddError(msgType, content)
+	})
+
+	return o
 }
 
 // Focus gives focus to the outliner
@@ -107,10 +183,10 @@ func (o Outliner) Update(msg tea.Msg) (Outliner, tea.Cmd) {
 			// Create new line at same level
 			if o.cursor < len(o.lines) {
 				currentLevel := o.lines[o.cursor].Level
-				newNode := OutlineNode{Text: "", Level: currentLevel}
+				newNodeObj := newNode("", currentLevel)
 
 				// Insert after current line
-				o.lines = append(o.lines[:o.cursor+1], append([]OutlineNode{newNode}, o.lines[o.cursor+1:]...)...)
+				o.lines = append(o.lines[:o.cursor+1], append([]OutlineNode{newNodeObj}, o.lines[o.cursor+1:]...)...)
 				o.cursor++
 				o.cursorPos = 0
 			}
@@ -186,6 +262,13 @@ func (o Outliner) Update(msg tea.Msg) (Outliner, tea.Cmd) {
 				}
 			}
 
+		case "ctrl+t":
+			// Toggle detail mode
+			o.detailMode = !o.detailMode
+
+		case "ctrl+l":
+			// Toggle debug panel (log)
+			o.debugPanel.Toggle()
 		default:
 			// Handle regular character input
 			if len(msg.String()) == 1 {
@@ -194,7 +277,12 @@ func (o Outliner) Update(msg tea.Msg) (Outliner, tea.Cmd) {
 					line := &o.lines[o.cursor]
 					// Insert character at cursor position
 					line.Text = line.Text[:o.cursorPos] + char + line.Text[o.cursorPos:]
+					line.ModifiedAt = time.Now()
+					line.Captured = false // Mark as needing re-capture
 					o.cursorPos++
+
+					// Update links when text changes
+					o.updateNodeLinks(o.cursor)
 				}
 			}
 		}
@@ -203,55 +291,110 @@ func (o Outliner) Update(msg tea.Msg) (Outliner, tea.Cmd) {
 	return o, nil
 }
 
-// View renders the outliner
+// View renders the outliner with enhanced visual feedback
 func (o Outliner) View() string {
 	if len(o.lines) == 0 {
 		return ""
 	}
 
-	// Debug: show line count
 	var content strings.Builder
+
+	// Debug info (can be removed later)
 	content.WriteString(fmt.Sprintf("Lines: %d, Cursor: %d\n", len(o.lines), o.cursor))
 
 	for i, line := range o.lines {
-		// Create indentation
-		indent := strings.Repeat("  ", line.Level) // 2 spaces per level
+		isCurrentLine := i == o.cursor && o.focused
 
-		// Create bullet
-		bullet := "•"
-		if line.Level > 0 {
-			bullet = "◦" // Different bullet for sub-items
+		// Build tree structure with connection lines
+		var treePrefix strings.Builder
+
+		// Add tree connection lines for nested items
+		for level := 0; level < line.Level; level++ {
+			if level == line.Level-1 {
+				// Last level - show branch
+				treePrefix.WriteString(o.treeLineStyle.Render("├─ "))
+			} else {
+				// Intermediate levels - show vertical line
+				treePrefix.WriteString(o.treeLineStyle.Render("│  "))
+			}
 		}
 
-		// Build the line
-		lineText := indent + o.bulletStyle.Render(bullet+" ") + line.Text
+		// Choose bullet based on level and expand state
+		var bullet string
+		if line.HasChildren {
+			// Show expand/collapse indicator for nodes with children
+			if line.Collapsed {
+				bullet = "▶" // Collapsed (children hidden)
+			} else {
+				bullet = "▼" // Expanded (children visible)
+			}
+		} else {
+			// Regular bullets for leaf nodes
+			switch line.Level {
+			case 0:
+				bullet = "●" // Solid bullet for root items
+			case 1:
+				bullet = "○" // Hollow bullet for level 1
+			case 2:
+				bullet = "◦" // Small bullet for level 2
+			default:
+				bullet = "·" // Tiny bullet for deeper levels
+			}
+		}
+
+		// Style the bullet
+		styledBullet := o.bulletStyle.Render(bullet + " ")
+
+		// Build the text content with consciousness metadata
+		textContent := o.renderNodeContent(line)
 
 		// Add cursor if this is the current line
-		if i == o.cursor && o.focused {
-			// Simple cursor - just add a pipe character
-			bulletAndSpace := o.bulletStyle.Render(bullet + " ")
+		if isCurrentLine {
 			cursorPos := o.cursorPos
 			if cursorPos > len(line.Text) {
 				cursorPos = len(line.Text)
 			}
 
-			// Build line with cursor
+			// Insert cursor character
 			beforeCursor := line.Text[:cursorPos]
 			afterCursor := line.Text[cursorPos:]
-			lineText = indent + bulletAndSpace + beforeCursor + "|" + afterCursor
+			textContent = beforeCursor + o.cursorStyle.Render("│") + afterCursor
 		}
 
-		content.WriteString(lineText)
+		// Combine all parts
+		lineContent := treePrefix.String() + styledBullet + textContent
+
+		// Apply row highlighting for current line
+		if isCurrentLine {
+			// Pad to full width and highlight entire row
+			padding := o.width - lipgloss.Width(lineContent) - 6 // Account for border
+			if padding > 0 {
+				lineContent += strings.Repeat(" ", padding)
+			}
+			lineContent = o.highlightStyle.Render(lineContent)
+		}
+
+		content.WriteString(lineContent)
 		if i < len(o.lines)-1 {
 			content.WriteString("\n")
 		}
 	}
 
-	// Apply border style based on focus
+	// Main outliner content
+	var mainContent string
 	if o.focused {
-		return o.focusedStyle.Width(o.width - 4).Height(o.height - 4).Render(content.String())
+		mainContent = o.focusedStyle.Width(o.width - 4).Height(o.height - 4).Render(content.String())
+	} else {
+		mainContent = o.unfocusedStyle.Width(o.width - 4).Height(o.height - 4).Render(content.String())
 	}
-	return o.unfocusedStyle.Width(o.width - 4).Height(o.height - 4).Render(content.String())
+
+	// Add debug panel if visible
+	if o.debugPanel.IsVisible() {
+		debugContent := o.debugPanel.View(o.width, o.height/3) // Use 1/3 of height for debug panel
+		return mainContent + "\n" + debugContent
+	}
+
+	return mainContent
 }
 
 // GetContent returns the current outline as a string
@@ -286,17 +429,395 @@ func (o *Outliner) SetContent(content string) {
 		trimmed = strings.TrimPrefix(trimmed, "• ")
 		trimmed = strings.TrimPrefix(trimmed, "◦ ")
 
-		o.lines = append(o.lines, OutlineNode{
-			Text:  trimmed,
-			Level: level,
-		})
+		node := newNode(trimmed, level)
+		// Detect if this is a consciousness pattern and mark it
+		if patternType := o.detectPatternType(trimmed); patternType != "" {
+			node.PatternType = patternType
+		}
+		o.lines = append(o.lines, node)
 	}
 
 	// Ensure we have at least one line
 	if len(o.lines) == 0 {
-		o.lines = []OutlineNode{{Text: "", Level: 0}}
+		o.lines = []OutlineNode{newNode("", 0)}
 	}
 
 	o.cursor = 0
 	o.cursorPos = 0
+
+	// Update all links after loading content
+	for i := range o.lines {
+		o.updateNodeLinks(i)
+	}
+
+	// Trigger consciousness capture on content load
+	o.captureConsciousness("content_load")
+}
+
+// captureConsciousness analyzes content for :: patterns and dispatches through FLOAT system
+func (o *Outliner) captureConsciousness(trigger string) {
+	if o.parser == nil || o.evna == nil || o.dispatch == nil {
+		return
+	}
+
+	content := o.GetContent()
+	parsed := o.parser.Parse(content)
+
+	if len(parsed.ConsciousnessData) > 0 {
+		// Process through FLOAT.dispatch system
+		for _, pattern := range parsed.ConsciousnessData {
+			// Find the corresponding node
+			nodeID := ""
+			if pattern.Line <= len(o.lines) {
+				nodeID = o.lines[pattern.Line-1].ID
+			}
+
+			// Handle special FLOAT patterns
+			o.handleFloatPattern(pattern, nodeID)
+
+			// Dispatch through FLOAT system
+			action := o.dispatch.Dispatch(nodeID, pattern.Content, pattern.Type)
+
+			// Also send to evna for external consciousness integration
+			source := fmt.Sprintf("float-dispatch:%s", trigger)
+			if err := o.evna.DispatchPatterns([]ConsciousnessPattern{pattern}, source); err != nil {
+				o.debugPanel.AddError("EVNA_DISPATCH_ERROR", err.Error())
+			} else {
+				o.debugPanel.AddConsciousnessCapture(action.PatternType, "evna")
+			}
+
+			// Log the FLOAT dispatch
+			o.debugPanel.AddFloatDispatch(action.PatternType, action.Imprint, action.Sigil, action.ID)
+		}
+
+		// Mark nodes as captured after successful dispatch
+		o.markNodesAsCaptured(parsed.ConsciousnessData)
+	}
+}
+
+// markNodesAsCaptured updates node capture status after successful consciousness dispatch
+func (o *Outliner) markNodesAsCaptured(patterns []ConsciousnessPattern) {
+	// Create a map of line numbers that were captured
+	capturedLines := make(map[int]bool)
+	for _, pattern := range patterns {
+		capturedLines[pattern.Line] = true
+	}
+
+	// Mark corresponding nodes as captured
+	lineNum := 1
+	for i := range o.lines {
+		node := &o.lines[i]
+		if node.Text != "" { // Only count non-empty lines
+			if capturedLines[lineNum] {
+				node.Captured = true
+			}
+			lineNum++
+		}
+	}
+}
+
+// TriggerConsciousnessCapture manually triggers consciousness pattern analysis
+func (o *Outliner) TriggerConsciousnessCapture() {
+	o.captureConsciousness("manual_trigger")
+}
+
+// IsDetailMode returns whether detail mode is enabled
+func (o *Outliner) IsDetailMode() bool {
+	return o.detailMode
+}
+
+// IsDebugVisible returns whether debug panel is visible
+func (o *Outliner) IsDebugVisible() bool {
+	return o.debugPanel.IsVisible()
+}
+
+// handleFloatPattern processes special FLOAT patterns (reducer::, selector::)
+func (o *Outliner) handleFloatPattern(pattern ConsciousnessPattern, nodeID string) {
+	switch pattern.Type {
+	case "reducer":
+		o.handleReducerPattern(pattern, nodeID)
+	case "selector":
+		o.handleSelectorPattern(pattern, nodeID)
+	}
+}
+
+// handleReducerPattern creates a new consciousness reducer
+func (o *Outliner) handleReducerPattern(pattern ConsciousnessPattern, nodeID string) {
+	// Parse reducer definition: "reducer::name collect all actions that are bridges about rangle"
+	parts := strings.SplitN(pattern.Content, " ", 2)
+	if len(parts) < 2 {
+		return
+	}
+
+	reducerName := parts[0]
+	query := parts[1]
+
+	// Create matcher based on query (simplified for now)
+	matcher := func(action DispatchAction) bool {
+		content := strings.ToLower(action.Content)
+		queryLower := strings.ToLower(query)
+
+		// Simple keyword matching - could be much more sophisticated
+		if strings.Contains(queryLower, "bridges") && action.PatternType == "bridge" {
+			return true
+		}
+		if strings.Contains(queryLower, "rangle") && strings.Contains(content, "rangle") {
+			return true
+		}
+
+		return false
+	}
+
+	o.dispatch.AddReducer(reducerName, query, matcher)
+	o.debugPanel.AddReducerCreated(reducerName, query)
+}
+
+// handleSelectorPattern creates a new consciousness selector
+func (o *Outliner) handleSelectorPattern(pattern ConsciousnessPattern, nodeID string) {
+	// Parse selector definition: "selector:: (name_a, name_b) => toc for tech craft zine"
+	content := pattern.Content
+
+	// Extract inputs and output format (simplified parsing)
+	if strings.Contains(content, "=>") {
+		parts := strings.Split(content, "=>")
+		if len(parts) == 2 {
+			inputPart := strings.TrimSpace(parts[0])
+			outputFormat := strings.TrimSpace(parts[1])
+
+			// Extract reducer names from (name_a, name_b) format
+			inputPart = strings.Trim(inputPart, "()")
+			inputs := strings.Split(inputPart, ",")
+			for i, input := range inputs {
+				inputs[i] = strings.TrimSpace(input)
+			}
+
+			// Create transform function
+			transform := func(reducerInputs map[string][]DispatchAction) string {
+				var result strings.Builder
+				result.WriteString(fmt.Sprintf("# %s\n\n", outputFormat))
+
+				for reducerName, actions := range reducerInputs {
+					result.WriteString(fmt.Sprintf("## From %s (%d items)\n", reducerName, len(actions)))
+					for _, action := range actions {
+						result.WriteString(fmt.Sprintf("- %s: %s\n", action.PatternType, action.Content))
+					}
+					result.WriteString("\n")
+				}
+
+				return result.String()
+			}
+
+			selectorName := fmt.Sprintf("selector_%s", generateNodeID()[:8])
+			o.dispatch.AddSelector(selectorName, inputs, transform)
+			o.debugPanel.AddSelectorCreated(selectorName, outputFormat)
+		}
+	}
+}
+
+// renderNodeContent renders node text with consciousness metadata based on detail mode
+func (o *Outliner) renderNodeContent(node OutlineNode) string {
+	baseText := o.renderLinksInText(node.Text)
+
+	// Detect pattern type from text
+	patternType := o.detectPatternType(baseText)
+
+	if !o.detailMode {
+		// Simple mode - show text with color coding and capture indicators
+		if patternType != "" {
+			var style lipgloss.Style
+
+			// Add color coding for different pattern types
+			switch patternType {
+			case "ctx":
+				style = lipgloss.NewStyle().Foreground(lipgloss.Color("14")) // cyan
+			case "eureka":
+				style = lipgloss.NewStyle().Foreground(lipgloss.Color("11")) // yellow
+			case "decision":
+				style = lipgloss.NewStyle().Foreground(lipgloss.Color("9")) // red
+			case "highlight":
+				style = lipgloss.NewStyle().Foreground(lipgloss.Color("10")) // green
+			case "gotcha":
+				style = lipgloss.NewStyle().Foreground(lipgloss.Color("13")) // magenta
+			case "bridge":
+				style = lipgloss.NewStyle().Foreground(lipgloss.Color("12")) // blue
+			case "dispatch":
+				style = lipgloss.NewStyle().Foreground(lipgloss.Color("15")).Bold(true) // bright white, bold
+			case "reducer":
+				style = lipgloss.NewStyle().Foreground(lipgloss.Color("6")).Bold(true) // bright cyan, bold
+			case "selector":
+				style = lipgloss.NewStyle().Foreground(lipgloss.Color("5")).Bold(true) // bright magenta, bold
+			case "imprint":
+				style = lipgloss.NewStyle().Foreground(lipgloss.Color("3")).Bold(true) // bright yellow, bold
+			default:
+				style = lipgloss.NewStyle().Foreground(lipgloss.Color("8")) // gray
+			}
+
+			// Add subtle capture indicator
+			text := baseText
+			if !node.Captured {
+				text += " ●" // Uncaptured indicator
+			} else {
+				text += " ○" // Captured indicator
+			}
+
+			return style.Render(text)
+		}
+		return baseText
+	}
+
+	// Detail mode - show full metadata
+	var details strings.Builder
+	details.WriteString(baseText)
+
+	if patternType != "" {
+		details.WriteString(fmt.Sprintf(" [%s]", patternType))
+	}
+
+	if !node.Captured {
+		details.WriteString(" [uncaptured]")
+	}
+
+	details.WriteString(fmt.Sprintf(" [id:%s]", node.ID[:8])) // Show short ID
+	details.WriteString(fmt.Sprintf(" [%s]", node.ModifiedAt.Format("15:04")))
+
+	return details.String()
+}
+
+// detectPatternType identifies the consciousness pattern type from text
+func (o *Outliner) detectPatternType(text string) string {
+	patterns := []string{
+		"ctx::", "eureka::", "decision::", "highlight::", "gotcha::", "bridge::", "concept::", "mode::", "project::",
+		"dispatch::", "reducer::", "selector::", "imprint::", "sigil::",
+	}
+
+	for _, pattern := range patterns {
+		if strings.Contains(text, pattern) {
+			return strings.TrimSuffix(pattern, "::")
+		}
+	}
+
+	return ""
+}
+
+// extractLinks finds all [[concept]] links in text
+func (o *Outliner) extractLinks(text string) []string {
+	linkRegex := regexp.MustCompile(`\[\[([^\]]+)\]\]`)
+	matches := linkRegex.FindAllStringSubmatch(text, -1)
+
+	var links []string
+	for _, match := range matches {
+		if len(match) >= 2 {
+			concept := strings.TrimSpace(match[1])
+			if concept != "" {
+				links = append(links, concept)
+			}
+		}
+	}
+
+	return links
+}
+
+// updateNodeLinks updates a node's links and the global link registry
+func (o *Outliner) updateNodeLinks(nodeIndex int) {
+	if nodeIndex >= len(o.lines) {
+		return
+	}
+
+	node := &o.lines[nodeIndex]
+
+	// Remove old links from registry
+	for _, oldLink := range node.Links {
+		o.removeLinkFromRegistry(oldLink, node.ID)
+	}
+
+	// Extract new links
+	newLinks := o.extractLinks(node.Text)
+	node.Links = newLinks
+
+	// Add new links to registry
+	for _, link := range newLinks {
+		o.addLinkToRegistry(link, node.ID)
+	}
+
+	// Update backlinks for all nodes
+	o.updateBacklinks()
+}
+
+// addLinkToRegistry adds a node ID to a concept's registry
+func (o *Outliner) addLinkToRegistry(concept, nodeID string) {
+	if o.linkRegistry[concept] == nil {
+		o.linkRegistry[concept] = []string{}
+	}
+
+	// Check if already exists
+	for _, id := range o.linkRegistry[concept] {
+		if id == nodeID {
+			return
+		}
+	}
+
+	o.linkRegistry[concept] = append(o.linkRegistry[concept], nodeID)
+}
+
+// removeLinkFromRegistry removes a node ID from a concept's registry
+func (o *Outliner) removeLinkFromRegistry(concept, nodeID string) {
+	if o.linkRegistry[concept] == nil {
+		return
+	}
+
+	for i, id := range o.linkRegistry[concept] {
+		if id == nodeID {
+			o.linkRegistry[concept] = append(o.linkRegistry[concept][:i], o.linkRegistry[concept][i+1:]...)
+			break
+		}
+	}
+
+	// Clean up empty entries
+	if len(o.linkRegistry[concept]) == 0 {
+		delete(o.linkRegistry, concept)
+	}
+}
+
+// updateBacklinks updates backlink information for all nodes
+func (o *Outliner) updateBacklinks() {
+	// Clear all backlinks
+	for i := range o.lines {
+		o.lines[i].Backlinks = []string{}
+	}
+
+	// Rebuild backlinks from link registry
+	for concept, nodeIDs := range o.linkRegistry {
+		// Find nodes that contain this concept as text (not just links)
+		for i, node := range o.lines {
+			if strings.Contains(strings.ToLower(node.Text), strings.ToLower(concept)) {
+				// This node mentions the concept, so all nodes linking to this concept
+				// should have this node as a backlink
+				for _, linkingNodeID := range nodeIDs {
+					// Find the linking node and add this node as a backlink
+					for j := range o.lines {
+						if o.lines[j].ID == linkingNodeID {
+							o.lines[i].Backlinks = append(o.lines[i].Backlinks, linkingNodeID)
+							break
+						}
+					}
+				}
+			}
+		}
+	}
+}
+
+// renderLinksInText applies visual styling to [[links]] in text
+func (o *Outliner) renderLinksInText(text string) string {
+	linkRegex := regexp.MustCompile(`\[\[([^\]]+)\]\]`)
+
+	// Style for links
+	linkStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color("4")). // Blue
+		Underline(true)
+
+	return linkRegex.ReplaceAllStringFunc(text, func(match string) string {
+		// Extract the concept name
+		concept := strings.Trim(match, "[]")
+		return linkStyle.Render("[[" + concept + "]]")
+	})
 }
