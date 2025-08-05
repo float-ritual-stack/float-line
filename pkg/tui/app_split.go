@@ -23,8 +23,7 @@ type focusedPane int
 const (
 	focusBooks focusedPane = iota
 	focusHighlights
-	focusHighlightView
-	focusNoteView
+	focusDetail // Simplified: just one detail focus instead of two
 )
 
 type editMode int
@@ -46,30 +45,30 @@ type ModelSplit struct {
 	width  int
 	height int
 	ready  bool
-	
+
 	// Fixed layout dimensions
 	bookPaneWidth      int
 	highlightPaneWidth int
 	detailPaneWidth    int
 	contentHeight      int
-	
+
 	// Components
-	bookList         list.Model
-	highlightList    list.Model
-	highlightView    viewport.Model
-	noteView         viewport.Model
-	highlightEditor  textarea.Model
-	noteEditor       textarea.Model
-	help             help.Model
-	
+	bookList        list.Model
+	highlightList   list.Model
+	highlightView   viewport.Model
+	noteView        viewport.Model
+	highlightEditor textarea.Model
+	noteEditor      textarea.Model
+	help            help.Model
+
 	// Data
-	books            []models.Book
-	highlights       []models.Highlight
-	currentBook      *models.Book
-	currentHighlight *models.Highlight
+	books             []models.Book
+	highlights        []models.Highlight
+	currentBook       *models.Book
+	currentHighlight  *models.Highlight
 	originalHighlight *models.Highlight
-	nextPageURL      string
-	
+	nextPageURL       string
+
 	// UI state
 	focusedPane     focusedPane
 	editMode        editMode
@@ -89,7 +88,7 @@ func NewSplitModel(apiClient *api.Client) ModelSplit {
 		splitRatio:  0.5,
 		editMode:    editNone,
 	}
-	
+
 	// Initialize lists with custom delegates
 	delegate := list.NewDefaultDelegate()
 	delegate.ShowDescription = true
@@ -98,13 +97,13 @@ func NewSplitModel(apiClient *api.Client) ModelSplit {
 		BorderForeground(lipgloss.Color("170"))
 	delegate.Styles.SelectedDesc = delegate.Styles.SelectedDesc.
 		Foreground(lipgloss.Color("241"))
-	
+
 	m.bookList = list.New([]list.Item{}, delegate, 0, 0)
 	m.bookList.Title = "📚 Books"
 	m.bookList.SetShowHelp(false)
 	m.bookList.SetFilteringEnabled(true)
 	m.bookList.DisableQuitKeybindings()
-	
+
 	// Custom delegate for highlights with more preview
 	highlightDelegate := list.NewDefaultDelegate()
 	highlightDelegate.ShowDescription = true
@@ -112,20 +111,20 @@ func NewSplitModel(apiClient *api.Client) ModelSplit {
 	highlightDelegate.Styles.SelectedTitle = highlightDelegate.Styles.SelectedTitle.
 		Foreground(lipgloss.Color("170")).
 		BorderForeground(lipgloss.Color("170"))
-	
+
 	m.highlightList = list.New([]list.Item{}, highlightDelegate, 0, 0)
 	m.highlightList.Title = "📝 Highlights"
 	m.highlightList.SetShowHelp(false)
 	m.highlightList.SetFilteringEnabled(true)
 	m.highlightList.DisableQuitKeybindings()
-	
+
 	// Initialize viewports with scrollbars
 	m.highlightView = viewport.New(0, 0)
 	m.highlightView.Style = lipgloss.NewStyle().PaddingRight(1)
-	
+
 	m.noteView = viewport.New(0, 0)
 	m.noteView.Style = lipgloss.NewStyle().PaddingRight(1)
-	
+
 	// Initialize text areas for editing
 	m.highlightEditor = textarea.New()
 	m.highlightEditor.Placeholder = "Edit highlight text..."
@@ -133,14 +132,14 @@ func NewSplitModel(apiClient *api.Client) ModelSplit {
 	m.highlightEditor.SetHeight(10)
 	m.highlightEditor.FocusedStyle.CursorLine = lipgloss.NewStyle()
 	m.highlightEditor.ShowLineNumbers = false
-	
+
 	m.noteEditor = textarea.New()
 	m.noteEditor.Placeholder = "Add your note..."
 	m.noteEditor.CharLimit = 10000
 	m.noteEditor.SetHeight(10)
 	m.noteEditor.FocusedStyle.CursorLine = lipgloss.NewStyle()
 	m.noteEditor.ShowLineNumbers = false
-	
+
 	return m
 }
 
@@ -166,7 +165,7 @@ func (m ModelSplit) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			cmds = append(cmds, m.renderHighlightDetail())
 		}
 		return m, tea.Batch(cmds...)
-		
+
 	case tea.KeyMsg:
 		// When in edit mode, handle editor keys first
 		if m.editMode != editNone {
@@ -209,12 +208,12 @@ func (m ModelSplit) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		}
-		
+
 		// Normal mode key handling
 		switch msg.String() {
 		case "ctrl+c", "ctrl+d":
 			return m, tea.Quit
-			
+
 		case "ctrl+b":
 			m.booksPaneHidden = !m.booksPaneHidden
 			m.calculateLayout()
@@ -223,26 +222,28 @@ func (m ModelSplit) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				cmds = append(cmds, m.renderHighlightDetail())
 			}
 			return m, tea.Batch(cmds...)
-			
+
 		case "tab":
 			m.cycleFocus()
+			// Debug: uncomment to see focus changes
+			// fmt.Printf("Focus changed to: %d\n", m.focusedPane)
 			return m, nil
-			
+
 		case "left", "h":
 			m.navigateLeft()
 			return m, nil
-			
+
 		case "right", "l":
 			m.navigateRight()
 			return m, nil
-			
+
 		case "q":
 			if m.focusedPane == focusBooks || m.focusedPane == focusHighlights {
 				return m, tea.Quit
 			}
 			return m, nil
 		}
-		
+
 		// Pane-specific key handling
 		switch m.focusedPane {
 		case focusBooks:
@@ -265,7 +266,7 @@ func (m ModelSplit) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					return m, cmd
 				}
 			}
-			
+
 		case focusHighlights:
 			switch msg.String() {
 			case "enter":
@@ -273,6 +274,11 @@ func (m ModelSplit) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.currentHighlight = &i.highlight
 					copy := *m.currentHighlight
 					m.originalHighlight = &copy
+					// IMPORTANT: Auto-focus the detail pane when highlight is selected
+					m.focusedPane = focusDetail
+					// Recalculate layout to ensure detail panel is visible
+					m.calculateLayout()
+					m.updateComponentSizes()
 					return m, m.renderHighlightDetail()
 				}
 			case "esc":
@@ -285,8 +291,8 @@ func (m ModelSplit) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.highlightList = newList
 				return m, cmd
 			}
-			
-		case focusHighlightView:
+
+		case focusDetail:
 			switch msg.String() {
 			case "e":
 				m.startEdit(editBoth)
@@ -297,42 +303,21 @@ func (m ModelSplit) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case "ctrl+e":
 				return m, m.openExternalEditor()
 			case "esc":
+				// Go back to highlights pane
 				m.focusedPane = focusHighlights
 				return m, nil
-			case "down", "j":
-				m.focusedPane = focusNoteView
-				return m, nil
 			default:
-				// Update only highlight viewport
-				newView, cmd := m.highlightView.Update(msg)
-				m.highlightView = newView
-				return m, cmd
-			}
-			
-		case focusNoteView:
-			switch msg.String() {
-			case "e":
-				m.startEdit(editBoth)
-				return m, nil
-			case "E":
-				m.startEdit(editNote)
-				return m, nil
-			case "ctrl+e":
-				return m, m.openExternalEditor()
-			case "esc":
-				m.focusedPane = focusHighlights
-				return m, nil
-			case "up", "k":
-				m.focusedPane = focusHighlightView
-				return m, nil
-			default:
-				// Update only note viewport
-				newView, cmd := m.noteView.Update(msg)
-				m.noteView = newView
-				return m, cmd
+				// Update both viewports - they handle scrolling
+				newHighlightView, cmd1 := m.highlightView.Update(msg)
+				m.highlightView = newHighlightView
+
+				newNoteView, cmd2 := m.noteView.Update(msg)
+				m.noteView = newNoteView
+
+				return m, tea.Batch(cmd1, cmd2)
 			}
 		}
-		
+
 	case booksLoadedMsg:
 		m.loading = false
 		m.books = msg.books
@@ -341,7 +326,7 @@ func (m ModelSplit) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			items[i] = bookItem{book: book}
 		}
 		m.bookList.SetItems(items)
-		
+
 	case highlightsLoadedMsg:
 		m.loading = false
 		m.highlights = msg.highlights
@@ -351,11 +336,11 @@ func (m ModelSplit) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			items[i] = highlightItem{highlight: highlight}
 		}
 		m.highlightList.SetItems(items)
-		
+
 	case highlightRenderedMsg:
 		m.highlightView.SetContent(msg.content)
 		m.noteView.SetContent(msg.noteContent)
-		
+
 	case highlightSavedMsg:
 		m.saving = false
 		m.editMode = editNone
@@ -368,46 +353,52 @@ func (m ModelSplit) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.highlightList.SetItems(items)
 		cmds = append(cmds, m.renderHighlightDetail())
-		
+
 	case errMsg:
 		m.err = msg.err
 		m.loading = false
 		m.saving = false
-		
+
 	case externalEditorFinishedMsg:
 		if msg.err == nil {
 			m.currentHighlight.Note = msg.content
 			m.saving = true
 			cmds = append(cmds, m.updateHighlightNote())
 		}
-		
+
 	default:
-		// Handle other updates only when not in edit mode
-		if m.editMode == editNone && !m.loading && !m.saving {
-			switch m.focusedPane {
-			case focusBooks:
-				if !m.booksPaneHidden {
-					newList, cmd := m.bookList.Update(msg)
-					m.bookList = newList
-					cmds = append(cmds, cmd)
-				}
-				
-			case focusHighlights:
-				newList, cmd := m.highlightList.Update(msg)
-				m.highlightList = newList
-				cmds = append(cmds, cmd)
-				
-			case focusHighlightView:
-				newView, cmd := m.highlightView.Update(msg)
-				m.highlightView = newView
-				cmds = append(cmds, cmd)
-				
-			case focusNoteView:
-				newView, cmd := m.noteView.Update(msg)
-				m.noteView = newView
-				cmds = append(cmds, cmd)
-			}
+		// ALWAYS update components - let them handle their own state
+		// This fixes the race condition where components miss updates
+
+		// Update book list
+		if !m.booksPaneHidden {
+			newList, cmd := m.bookList.Update(msg)
+			m.bookList = newList
+			cmds = append(cmds, cmd)
 		}
+
+		// Update highlight list
+		newList, cmd := m.highlightList.Update(msg)
+		m.highlightList = newList
+		cmds = append(cmds, cmd)
+
+		// Update viewports
+		newHighlightView, cmd := m.highlightView.Update(msg)
+		m.highlightView = newHighlightView
+		cmds = append(cmds, cmd)
+
+		newNoteView, cmd := m.noteView.Update(msg)
+		m.noteView = newNoteView
+		cmds = append(cmds, cmd)
+
+		// Update editors (they handle their own focus state)
+		newHighlightEditor, cmd := m.highlightEditor.Update(msg)
+		m.highlightEditor = newHighlightEditor
+		cmds = append(cmds, cmd)
+
+		newNoteEditor, cmd := m.noteEditor.Update(msg)
+		m.noteEditor = newNoteEditor
+		cmds = append(cmds, cmd)
 	}
 
 	return m, tea.Batch(cmds...)
@@ -427,12 +418,12 @@ func (m ModelSplit) View() string {
 		BorderStyle(lipgloss.RoundedBorder()).
 		BorderForeground(lipgloss.Color("62")).
 		Padding(0, 1)
-	
+
 	unfocusedStyle := lipgloss.NewStyle().
 		BorderStyle(lipgloss.RoundedBorder()).
 		BorderForeground(lipgloss.Color("240")).
 		Padding(0, 1)
-	
+
 	hiddenStyle := lipgloss.NewStyle().
 		BorderStyle(lipgloss.NormalBorder()).
 		BorderForeground(lipgloss.Color("240")).
@@ -443,7 +434,7 @@ func (m ModelSplit) View() string {
 
 	// Build panes
 	var panes []string
-	
+
 	// Books pane
 	if m.booksPaneHidden {
 		indicator := strings.Repeat("│\n", m.contentHeight-2)
@@ -456,7 +447,7 @@ func (m ModelSplit) View() string {
 		if m.loading && m.focusedPane == focusBooks {
 			bookContent = "Loading books..."
 		}
-		
+
 		bookPane := bookContent
 		if m.focusedPane == focusBooks && m.editMode == editNone {
 			bookPane = focusedStyle.
@@ -471,14 +462,14 @@ func (m ModelSplit) View() string {
 		}
 		panes = append(panes, bookPane)
 	}
-	
+
 	// Highlights pane
 	if m.currentBook != nil {
 		highlightContent := m.highlightList.View()
 		if m.loading && m.focusedPane == focusHighlights {
 			highlightContent = fmt.Sprintf("Loading highlights for %s...", m.currentBook.Title)
 		}
-		
+
 		highlightPane := highlightContent
 		if m.focusedPane == focusHighlights && m.editMode == editNone {
 			highlightPane = focusedStyle.
@@ -493,11 +484,11 @@ func (m ModelSplit) View() string {
 		}
 		panes = append(panes, highlightPane)
 	}
-	
-	// Detail pane
-	if m.currentHighlight != nil && m.currentBook != nil {
+
+	// Detail pane - show whenever we have a highlight
+	if m.currentHighlight != nil {
 		var detailContent string
-		
+
 		if m.saving {
 			detailContent = "Saving..."
 		} else if m.editMode != editNone {
@@ -505,9 +496,9 @@ func (m ModelSplit) View() string {
 		} else {
 			detailContent = m.renderSplitView()
 		}
-		
+
 		detailPane := detailContent
-		if (m.focusedPane == focusHighlightView || m.focusedPane == focusNoteView || m.editMode != editNone) {
+		if m.focusedPane == focusDetail || m.editMode != editNone {
 			detailPane = focusedStyle.
 				Width(m.detailPaneWidth - 4).
 				Height(m.contentHeight - 2).
@@ -520,17 +511,17 @@ func (m ModelSplit) View() string {
 		}
 		panes = append(panes, detailPane)
 	}
-	
+
 	// Join panes horizontally
 	content := lipgloss.JoinHorizontal(lipgloss.Top, panes...)
-	
+
 	// Add help text
 	helpText := m.getHelpText()
 	helpStyle := lipgloss.NewStyle().
 		Foreground(lipgloss.Color("241")).
 		Align(lipgloss.Center).
 		Width(m.width)
-	
+
 	return lipgloss.JoinVertical(
 		lipgloss.Top,
 		content,
@@ -539,25 +530,32 @@ func (m ModelSplit) View() string {
 }
 
 func (m ModelSplit) renderSplitView() string {
-	innerWidth := max(1, m.detailPaneWidth - 6)
-	splitHeight := max(2, m.contentHeight - 4)
-	highlightHeight := max(1, int(float64(splitHeight) * m.splitRatio))
-	noteHeight := max(1, splitHeight - highlightHeight - 1)
-	
+	innerWidth := max(1, m.detailPaneWidth-6)
+	splitHeight := max(2, m.contentHeight-4)
+	highlightHeight := max(1, int(float64(splitHeight)*m.splitRatio))
+	noteHeight := max(1, splitHeight-highlightHeight-1)
+
 	// Highlight section with border indicator
 	highlightStyle := lipgloss.NewStyle().
 		Width(innerWidth).
 		Height(highlightHeight)
-	
-	if m.focusedPane == focusHighlightView {
+
+	if m.focusedPane == focusDetail {
 		highlightStyle = highlightStyle.
 			BorderStyle(lipgloss.NormalBorder()).
 			BorderForeground(lipgloss.Color("62")).
 			BorderLeft(false).
 			BorderRight(false).
 			BorderTop(false)
+	} else {
+		// Subtle unfocused border
+		highlightStyle = highlightStyle.
+			BorderStyle(lipgloss.NormalBorder()).
+			BorderForeground(lipgloss.Color("240")).
+			BorderLeft(false).
+			BorderRight(false).
+			BorderTop(false)
 	}
-	
 	highlightContent := m.highlightView.View()
 	if m.highlightView.TotalLineCount() > m.highlightView.Height {
 		denominator := m.highlightView.TotalLineCount() - m.highlightView.Height
@@ -566,29 +564,37 @@ func (m ModelSplit) renderSplitView() string {
 			highlightContent = m.addScrollbar(highlightContent, m.highlightView.Height, scrollPercent)
 		}
 	}
-	
+
 	highlightSection := highlightStyle.Render(highlightContent)
-	
+
 	// Separator
 	separator := lipgloss.NewStyle().
 		Width(innerWidth).
 		Foreground(lipgloss.Color("240")).
 		Render(strings.Repeat("─", innerWidth))
-	
+
 	// Note section with border indicator
 	noteStyle := lipgloss.NewStyle().
 		Width(innerWidth).
 		Height(noteHeight)
-		
-	if m.focusedPane == focusNoteView {
+
+	if m.focusedPane == focusDetail {
 		noteStyle = noteStyle.
 			BorderStyle(lipgloss.NormalBorder()).
 			BorderForeground(lipgloss.Color("62")).
 			BorderLeft(false).
 			BorderRight(false).
 			BorderBottom(false)
+	} else {
+		// Subtle unfocused border
+		noteStyle = noteStyle.
+			BorderStyle(lipgloss.NormalBorder()).
+			BorderForeground(lipgloss.Color("240")).
+			BorderLeft(false).
+			BorderRight(false).
+			BorderBottom(false)
 	}
-	
+
 	noteContent := m.noteView.View()
 	if m.noteView.TotalLineCount() > m.noteView.Height {
 		denominator := m.noteView.TotalLineCount() - m.noteView.Height
@@ -597,9 +603,9 @@ func (m ModelSplit) renderSplitView() string {
 			noteContent = m.addScrollbar(noteContent, m.noteView.Height, scrollPercent)
 		}
 	}
-	
+
 	noteSection := noteStyle.Render(noteContent)
-	
+
 	return lipgloss.JoinVertical(
 		lipgloss.Top,
 		highlightSection,
@@ -609,40 +615,40 @@ func (m ModelSplit) renderSplitView() string {
 }
 
 func (m ModelSplit) renderEditView() string {
-	innerWidth := max(20, m.detailPaneWidth - 6)
-	innerHeight := max(10, m.contentHeight - 4)
-	
+	innerWidth := max(20, m.detailPaneWidth-6)
+	innerHeight := max(10, m.contentHeight-4)
+
 	if m.editMode == editNote {
 		m.noteEditor.SetWidth(innerWidth)
 		m.noteEditor.SetHeight(innerHeight)
 		return m.noteEditor.View()
 	} else if m.editMode == editBoth {
 		editorHeight := (innerHeight - 3) / 2
-		
+
 		m.highlightEditor.SetWidth(innerWidth)
 		m.highlightEditor.SetHeight(editorHeight)
-		
+
 		highlightStyle := lipgloss.NewStyle()
 		if m.activeEditor == 0 {
 			highlightStyle = highlightStyle.BorderForeground(lipgloss.Color("62"))
 		} else {
 			highlightStyle = highlightStyle.BorderForeground(lipgloss.Color("240"))
 		}
-		
+
 		highlightSection := highlightStyle.Render(m.highlightEditor.View())
-		
+
 		m.noteEditor.SetWidth(innerWidth)
 		m.noteEditor.SetHeight(editorHeight)
-		
+
 		noteStyle := lipgloss.NewStyle()
 		if m.activeEditor == 1 {
 			noteStyle = noteStyle.BorderForeground(lipgloss.Color("62"))
 		} else {
 			noteStyle = noteStyle.BorderForeground(lipgloss.Color("240"))
 		}
-		
+
 		noteSection := noteStyle.Render(m.noteEditor.View())
-		
+
 		return lipgloss.JoinVertical(
 			lipgloss.Top,
 			lipgloss.NewStyle().Foreground(lipgloss.Color("241")).Render("Highlight:"),
@@ -651,7 +657,7 @@ func (m ModelSplit) renderEditView() string {
 			noteSection,
 		)
 	}
-	
+
 	return ""
 }
 
@@ -661,20 +667,20 @@ func (m ModelSplit) addScrollbar(content string, height int, scrollPercent float
 	}
 	scrollbarStyle := lipgloss.NewStyle().
 		Foreground(lipgloss.Color("240"))
-	
+
 	scrollbarActiveStyle := lipgloss.NewStyle().
 		Foreground(lipgloss.Color("62"))
-	
+
 	lines := strings.Split(content, "\n")
 	if len(lines) > height {
 		lines = lines[:height]
 	}
-	
+
 	// Calculate scrollbar position
 	scrollbarHeight := height
 	thumbHeight := max(1, scrollbarHeight/10)
 	thumbPosition := int(float64(scrollbarHeight-thumbHeight) * scrollPercent)
-	
+
 	// Add scrollbar to each line
 	for i := range lines {
 		if i >= thumbPosition && i < thumbPosition+thumbHeight {
@@ -683,7 +689,7 @@ func (m ModelSplit) addScrollbar(content string, height int, scrollPercent float
 			lines[i] += scrollbarStyle.Render(" │")
 		}
 	}
-	
+
 	return strings.Join(lines, "\n")
 }
 
@@ -691,50 +697,74 @@ func (m *ModelSplit) calculateLayout() {
 	if m.width == 0 || m.height == 0 {
 		return
 	}
-	
+
 	helpHeight := 2
 	m.contentHeight = m.height - helpHeight
-	
-	// Calculate consistent pane widths
-	if m.booksPaneHidden {
-		m.bookPaneWidth = 3
-		if m.currentHighlight != nil {
-			m.highlightPaneWidth = m.width * 2 / 5
-			m.detailPaneWidth = m.width - m.highlightPaneWidth - m.bookPaneWidth
+
+	// Debug: uncomment to see layout calculations
+	// fmt.Printf("Layout: width=%d, highlight=%v, bookWidth=%d, highlightWidth=%d, detailWidth=%d\n",
+	//	m.width, m.currentHighlight != nil, m.bookPaneWidth, m.highlightPaneWidth, m.detailPaneWidth) // PRIORITY: If we have a highlight, detail panel MUST be visible
+	// This ensures the highlight/note view is always accessible
+	if m.currentHighlight != nil {
+		// Force minimum detail panel width
+		minDetailWidth := 50
+		if m.width < 100 {
+			minDetailWidth = m.width / 3 // At least 1/3 of screen
+		}
+
+		// Calculate remaining space for books + highlights
+		availableWidth := m.width - minDetailWidth
+
+		if m.booksPaneHidden {
+			m.bookPaneWidth = 3
+			m.highlightPaneWidth = availableWidth - m.bookPaneWidth
+			m.detailPaneWidth = minDetailWidth
 		} else {
-			m.highlightPaneWidth = m.width - m.bookPaneWidth
-			m.detailPaneWidth = 0
+			// Books get minimum space, highlights get the rest
+			m.bookPaneWidth = minBookPaneWidth
+			if availableWidth > 80 && m.width > 120 {
+				m.bookPaneWidth = maxBookPaneWidth
+			}
+
+			m.highlightPaneWidth = availableWidth - m.bookPaneWidth
+			m.detailPaneWidth = minDetailWidth
+
+			// Ensure highlight pane isn't too small
+			if m.highlightPaneWidth < 25 {
+				m.bookPaneWidth = availableWidth - 25
+				m.highlightPaneWidth = 25
+			}
 		}
 	} else {
-		m.bookPaneWidth = minBookPaneWidth
-		if m.width > 120 {
-			m.bookPaneWidth = maxBookPaneWidth
-		}
-		
-		remainingWidth := m.width - m.bookPaneWidth
-		if m.currentHighlight != nil {
-			m.highlightPaneWidth = remainingWidth * 2 / 5
-			m.detailPaneWidth = remainingWidth - m.highlightPaneWidth
+		// No highlight selected - use original logic
+		if m.booksPaneHidden {
+			m.bookPaneWidth = 3
+			m.highlightPaneWidth = m.width - m.bookPaneWidth
+			m.detailPaneWidth = 0
 		} else {
-			m.highlightPaneWidth = remainingWidth
+			m.bookPaneWidth = minBookPaneWidth
+			if m.width > 120 {
+				m.bookPaneWidth = maxBookPaneWidth
+			}
+
+			m.highlightPaneWidth = m.width - m.bookPaneWidth
 			m.detailPaneWidth = 0
 		}
 	}
 }
-
 func (m *ModelSplit) updateComponentSizes() {
 	// Update list sizes
 	if !m.booksPaneHidden {
 		m.bookList.SetSize(m.bookPaneWidth-6, m.contentHeight-2)
 	}
 	m.highlightList.SetSize(m.highlightPaneWidth-6, m.contentHeight-2)
-	
+
 	// Update viewport sizes
 	if m.detailPaneWidth > 0 {
 		splitHeight := m.contentHeight - 4
 		highlightHeight := int(float64(splitHeight) * m.splitRatio)
 		noteHeight := splitHeight - highlightHeight - 1
-		
+
 		// Ensure minimum heights
 		if highlightHeight < minPaneHeight {
 			highlightHeight = minPaneHeight
@@ -744,36 +774,77 @@ func (m *ModelSplit) updateComponentSizes() {
 			noteHeight = minPaneHeight
 			highlightHeight = splitHeight - noteHeight - 1
 		}
-		
+
 		m.highlightView.Width = m.detailPaneWidth - 8 // Account for padding and scrollbar
 		m.highlightView.Height = highlightHeight
-		
+
 		m.noteView.Width = m.detailPaneWidth - 8
 		m.noteView.Height = noteHeight
 	}
 }
 
-func (m *ModelSplit) navigateLeft() {
-	switch m.focusedPane {
-	case focusHighlights:
-		if !m.booksPaneHidden {
-			m.focusedPane = focusBooks
+// getAvailablePanes returns the list of currently available panes
+func (m *ModelSplit) getAvailablePanes() []focusedPane {
+	panes := []focusedPane{}
+
+	// Books pane (if not hidden)
+	if !m.booksPaneHidden {
+		panes = append(panes, focusBooks)
+	}
+
+	// Highlights pane (if we have a book)
+	if m.currentBook != nil {
+		panes = append(panes, focusHighlights)
+	}
+
+	// Detail pane (if we have a highlight)
+	if m.currentHighlight != nil {
+		panes = append(panes, focusDetail)
+	}
+
+	return panes
+}
+
+// findPaneIndex returns the index of the current pane in available panes
+func (m *ModelSplit) findPaneIndex() int {
+	panes := m.getAvailablePanes()
+	for i, pane := range panes {
+		if pane == m.focusedPane {
+			return i
 		}
-	case focusHighlightView, focusNoteView:
-		m.focusedPane = focusHighlights
+	}
+	return 0 // Default to first pane if not found
+}
+
+func (m *ModelSplit) navigateLeft() {
+	if m.editMode != editNone {
+		return
+	}
+
+	panes := m.getAvailablePanes()
+	if len(panes) <= 1 {
+		return
+	}
+
+	currentIndex := m.findPaneIndex()
+	if currentIndex > 0 {
+		m.focusedPane = panes[currentIndex-1]
 	}
 }
 
 func (m *ModelSplit) navigateRight() {
-	switch m.focusedPane {
-	case focusBooks:
-		if m.currentBook != nil {
-			m.focusedPane = focusHighlights
-		}
-	case focusHighlights:
-		if m.currentHighlight != nil {
-			m.focusedPane = focusHighlightView
-		}
+	if m.editMode != editNone {
+		return
+	}
+
+	panes := m.getAvailablePanes()
+	if len(panes) <= 1 {
+		return
+	}
+
+	currentIndex := m.findPaneIndex()
+	if currentIndex < len(panes)-1 {
+		m.focusedPane = panes[currentIndex+1]
 	}
 }
 
@@ -781,32 +852,27 @@ func (m *ModelSplit) cycleFocus() {
 	if m.editMode != editNone {
 		return
 	}
-	
-	switch m.focusedPane {
-	case focusBooks:
-		if m.currentBook != nil {
-			m.focusedPane = focusHighlights
-		}
-	case focusHighlights:
-		if m.currentHighlight != nil {
-			m.focusedPane = focusHighlightView
-		} else if !m.booksPaneHidden {
-			m.focusedPane = focusBooks
-		}
-	case focusHighlightView:
-		m.focusedPane = focusNoteView
-	case focusNoteView:
-		if !m.booksPaneHidden {
-			m.focusedPane = focusBooks
-		} else {
-			m.focusedPane = focusHighlights
-		}
+
+	panes := m.getAvailablePanes()
+	if len(panes) <= 1 {
+		return
 	}
+
+	oldFocus := m.focusedPane
+	currentIndex := m.findPaneIndex()
+	m.focusedPane = panes[(currentIndex+1)%len(panes)]
+
+	// Debug: uncomment to see focus transitions
+	// fmt.Printf("Focus: %d -> %d (available: %v)\n", oldFocus, m.focusedPane, panes)
+	_ = oldFocus // Prevent unused variable warning
 }
 
 func (m *ModelSplit) startEdit(mode editMode) {
 	m.editMode = mode
-	
+
+	// Blur all viewports when entering edit mode
+	// (viewports don't have Focus/Blur methods, but this is conceptually what we want)
+
 	if mode == editBoth {
 		m.highlightEditor.SetValue(m.currentHighlight.Text)
 		m.noteEditor.SetValue(m.currentHighlight.Note)
@@ -816,11 +882,18 @@ func (m *ModelSplit) startEdit(mode editMode) {
 	} else if mode == editNote {
 		m.noteEditor.SetValue(m.currentHighlight.Note)
 		m.noteEditor.Focus()
+		// Make sure highlight editor is blurred
+		m.highlightEditor.Blur()
 	}
 }
-
 func (m *ModelSplit) cancelEdit() {
 	m.editMode = editNone
+
+	// Blur editors when exiting edit mode
+	m.highlightEditor.Blur()
+	m.noteEditor.Blur()
+
+	// Restore original content
 	if m.originalHighlight != nil {
 		m.currentHighlight.Text = m.originalHighlight.Text
 		m.currentHighlight.Note = m.originalHighlight.Note
@@ -829,13 +902,13 @@ func (m *ModelSplit) cancelEdit() {
 
 func (m ModelSplit) getHelpText() string {
 	var parts []string
-	
+
 	if m.booksPaneHidden {
 		parts = append(parts, "ctrl+b: show books")
 	} else {
 		parts = append(parts, "ctrl+b: hide books")
 	}
-	
+
 	if m.editMode != editNone {
 		parts = append(parts, "ctrl+s: save • ctrl+q: cancel")
 		if m.editMode == editBoth {
@@ -854,13 +927,13 @@ func (m ModelSplit) getHelpText() string {
 				}
 				parts = append([]string{status}, parts...)
 			}
-		case focusHighlightView, focusNoteView:
-			parts = append(parts, "e: edit both • E: edit note • ctrl+e: external • ↑↓: switch view • esc: back")
+		case focusDetail:
+			parts = append(parts, "e: edit both • E: edit note • ctrl+e: external • ↑↓: scroll • esc: back")
 		}
-		
+
 		parts = append(parts, "tab/←→: navigate • ctrl+c: quit")
 	}
-	
+
 	return strings.Join(parts, " • ")
 }
 
@@ -869,14 +942,14 @@ func (m ModelSplit) saveEdits() tea.Cmd {
 		if m.currentHighlight == nil {
 			return nil
 		}
-		
+
 		if m.editMode == editNote || m.editMode == editBoth {
 			m.currentHighlight.Note = m.noteEditor.Value()
 		}
 		if m.editMode == editBoth {
 			m.currentHighlight.Text = m.highlightEditor.Value()
 		}
-		
+
 		m.saving = true
 		return highlightSavedMsg{}
 	}
@@ -885,48 +958,48 @@ func (m ModelSplit) saveEdits() tea.Cmd {
 func (m ModelSplit) openExternalEditor() tea.Cmd {
 	return func() tea.Msg {
 		tea.ClearScreen()
-		
+
 		editor := os.Getenv("EDITOR")
 		if editor == "" {
 			editor = "vim"
 		}
-		
+
 		tmpfile, err := os.CreateTemp("", "readwise-note-*.md")
 		if err != nil {
 			return errMsg{err}
 		}
-		
-		content := fmt.Sprintf("# Note for Highlight\n\n> %s\n\n---\n\n%s", 
+
+		content := fmt.Sprintf("# Note for Highlight\n\n> %s\n\n---\n\n%s",
 			m.currentHighlight.Text, m.currentHighlight.Note)
-		
+
 		if _, err := tmpfile.Write([]byte(content)); err != nil {
 			tmpfile.Close()
 			os.Remove(tmpfile.Name())
 			return errMsg{err}
 		}
 		tmpfile.Close()
-		
+
 		cmd := exec.Command(editor, tmpfile.Name())
 		cmd.Stdin = os.Stdin
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
-		
+
 		if err := cmd.Run(); err != nil {
 			os.Remove(tmpfile.Name())
 			return errMsg{err}
 		}
-		
+
 		edited, err := os.ReadFile(tmpfile.Name())
 		os.Remove(tmpfile.Name())
 		if err != nil {
 			return errMsg{err}
 		}
-		
+
 		parts := strings.Split(string(edited), "---\n\n")
 		if len(parts) > 1 {
 			return externalEditorFinishedMsg{content: strings.TrimSpace(parts[1])}
 		}
-		
+
 		return externalEditorFinishedMsg{content: string(edited)}
 	}
 }
@@ -962,45 +1035,45 @@ func (m ModelSplit) renderHighlightDetail() tea.Cmd {
 		if m.currentHighlight == nil {
 			return nil
 		}
-		
+
 		highlightContent := fmt.Sprintf("# Highlight\n\n> %s\n\n", m.currentHighlight.Text)
-		
+
 		if m.currentBook != nil {
-			highlightContent += fmt.Sprintf("**Book:** %s by %s\n\n", 
+			highlightContent += fmt.Sprintf("**Book:** %s by %s\n\n",
 				m.currentBook.Title, m.currentBook.Author)
 		}
-		
+
 		if m.currentHighlight.URL != "" {
 			highlightContent += fmt.Sprintf("**Source:** [Link](%s)\n\n", m.currentHighlight.URL)
 		}
-		
+
 		noteContent := "## Note\n\n"
 		if m.currentHighlight.Note != "" {
 			noteContent += m.currentHighlight.Note
 		} else {
 			noteContent += "*No note yet. Press 'e' to add one.*"
 		}
-		
-		detailWidth := max(50, m.detailPaneWidth - 10)
+
+		detailWidth := max(50, m.detailPaneWidth-10)
 		if detailWidth < 40 {
 			detailWidth = 40
 		}
-		
+
 		renderer, _ := glamour.NewTermRenderer(
 			glamour.WithAutoStyle(),
 			glamour.WithWordWrap(detailWidth),
 		)
-		
+
 		renderedHighlight, err := renderer.Render(highlightContent)
 		if err != nil {
 			renderedHighlight = highlightContent
 		}
-		
+
 		renderedNote, err := renderer.Render(noteContent)
 		if err != nil {
 			renderedNote = noteContent
 		}
-		
+
 		return highlightRenderedMsg{
 			content:     renderedHighlight,
 			noteContent: renderedNote,
@@ -1013,27 +1086,27 @@ func (m ModelSplit) updateHighlightNote() tea.Cmd {
 		if m.currentHighlight == nil {
 			return nil
 		}
-		
+
 		update := models.HighlightUpdate{
 			Note: m.currentHighlight.Note,
 		}
-		
+
 		if m.editMode == editBoth {
 			update.Text = m.currentHighlight.Text
 		}
-		
+
 		_, err := m.api.UpdateHighlight(m.currentHighlight.ID, update)
 		if err != nil {
 			return errMsg{err}
 		}
-		
+
 		for i, h := range m.highlights {
 			if h.ID == m.currentHighlight.ID {
 				m.highlights[i] = *m.currentHighlight
 				break
 			}
 		}
-		
+
 		return highlightSavedMsg{}
 	}
 }
