@@ -128,9 +128,11 @@ Compute derived state from reducers:
 
 ## 🎨 Example Session
 
+
+
+
 <img width="1698" height="878" alt="# My Consciousness Session 2025-08-05 at 6 43 44 PM" src="https://github.com/user-attachments/assets/9e2f970e-f11a-4672-8838-eea39a471962" />
 
----
 
 ```markdown
 # My Consciousness Session

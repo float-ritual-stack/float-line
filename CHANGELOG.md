@@ -7,6 +7,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2025-08-05
+
+### Added - Complete Reducer Visualization & Elm Architecture
+
+#### 🎯 Dynamic Reducer Tree Visualization
+- **Live pattern collection** - patterns automatically appear as children under reducers when collected
+- **Visual feedback loop** - see consciousness patterns get "sucked up" into reducers in real-time
+- **Expandable/collapsible nodes** - reducers show ▼/▶ indicators with child pattern lists
+- **Test scenario system** - `--test reducer-basic|reducer-complex|patterns-all` creates predefined test files
+
+#### 🏗️ Elm Architecture Implementation
+- **ReducerUpdateMsg** - proper message type for async reducer updates
+- **Channel-based communication** - callbacks send messages instead of direct model mutations
+- **listenForReducerUpdates()** - command that bridges external events to Bubble Tea update cycle
+- **Everything flows through Update()** - no more anti-pattern direct mutations
+
+#### 🧪 Testing & Development Infrastructure
+- **Unit test coverage** - comprehensive tests for reducer matching and consciousness capture logic
+- **Automated test scenarios** - reproducible test cases for development and debugging
+- **Enhanced debug panel** - better layout, visibility controls, and consciousness activity monitoring
+
+#### 🔧 Enhanced FLOAT Pattern Support
+- **Complete pattern parsing** - added `dispatch::`, `reducer::`, `selector::`, `imprint::` patterns
+- **Improved matcher logic** - supports "that mention X" and "about Y" query syntax
+- **Parser extensibility** - clean foundation for adding new consciousness patterns
+
+### Fixed
+- **Parser missing FLOAT patterns** - reducer/selector patterns weren't being detected
+- **UI not updating on async changes** - implemented proper Elm message passing
+- **Debug panel layout issues** - fixed height allocation and viewport management
+
+### Technical
+- **Architecture alignment** - moved from callback-based mutations to message-driven updates
+- **Redux-style consciousness** - proper separation of actions, reducers, and selectors
+- **Bubble Tea compliance** - all updates flow through the standard Update → Model → View cycle
+
 ## [0.1.0] - 2025-08-05
 
 ### Added - Initial Consciousness Technology Release

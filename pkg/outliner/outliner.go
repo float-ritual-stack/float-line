@@ -12,6 +12,12 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
+// ReducerUpdateMsg represents a reducer collecting a new action
+type ReducerUpdateMsg struct {
+	ReducerName string
+	Action      DispatchAction
+}
+
 // OutlineNode represents a single line in the outline with consciousness metadata
 type OutlineNode struct {
 	ID          string // Unique identifier for this node
@@ -52,6 +58,9 @@ type Outliner struct {
 	// FLOAT.dispatch system
 	dispatch   *FloatDispatchSystem
 	debugPanel *ConsciousnessDebugPanel
+
+	// Reducer update channel for Elm-style message passing
+	reducerUpdates chan ReducerUpdateMsg
 
 	// Bidirectional linking
 	linkRegistry   map[string][]string // concept -> []nodeIDs that mention it	// Styles
@@ -105,6 +114,9 @@ func New() Outliner {
 		dispatch:   NewFloatDispatchSystem(),
 		debugPanel: NewConsciousnessDebugPanel(),
 
+		// Elm-style message channel
+		reducerUpdates: make(chan ReducerUpdateMsg, 100),
+
 		// Default styles
 		bulletStyle: lipgloss.NewStyle().Foreground(lipgloss.Color("62")),
 		textStyle:   lipgloss.NewStyle(),
@@ -128,13 +140,31 @@ func New() Outliner {
 		o.debugPanel.AddError(msgType, content)
 	})
 
+	// Set up reducer update callback for Elm-style message passing
+	o.dispatch.SetReducerUpdateCallback(func(reducerName string, action DispatchAction) {
+		// Send message through channel instead of direct mutation
+		select {
+		case o.reducerUpdates <- ReducerUpdateMsg{ReducerName: reducerName, Action: action}:
+			// Message sent successfully
+		default:
+			// Channel full, skip this update (non-blocking)
+		}
+	})
+
 	return o
+}
+
+// listenForReducerUpdates creates a command that listens for reducer updates
+func (o *Outliner) listenForReducerUpdates() tea.Cmd {
+	return func() tea.Msg {
+		return <-o.reducerUpdates
+	}
 }
 
 // Focus gives focus to the outliner
 func (o *Outliner) Focus() tea.Cmd {
 	o.focused = true
-	return nil
+	return o.listenForReducerUpdates() // Start listening for reducer updates
 }
 
 // Blur removes focus from the outliner
@@ -286,6 +316,11 @@ func (o Outliner) Update(msg tea.Msg) (Outliner, tea.Cmd) {
 				}
 			}
 		}
+
+	case ReducerUpdateMsg:
+		// Handle reducer update message (Elm-style)
+		o.handleReducerUpdateMessage(msg)
+		return o, o.listenForReducerUpdates() // Continue listening
 	}
 
 	return o, nil
@@ -380,21 +415,31 @@ func (o Outliner) View() string {
 		}
 	}
 
-	// Main outliner content
+	// Calculate heights based on debug panel visibility
+	var mainHeight int
 	var mainContent string
-	if o.focused {
-		mainContent = o.focusedStyle.Width(o.width - 4).Height(o.height - 4).Render(content.String())
-	} else {
-		mainContent = o.unfocusedStyle.Width(o.width - 4).Height(o.height - 4).Render(content.String())
-	}
 
-	// Add debug panel if visible
 	if o.debugPanel.IsVisible() {
-		debugContent := o.debugPanel.View(o.width, o.height/3) // Use 1/3 of height for debug panel
-		return mainContent + "\n" + debugContent
-	}
+		debugPanelHeight := o.height / 3
+		mainHeight = o.height - debugPanelHeight - 4
 
-	return mainContent
+		if o.focused {
+			mainContent = o.focusedStyle.Width(o.width - 4).Height(mainHeight).Render(content.String())
+		} else {
+			mainContent = o.unfocusedStyle.Width(o.width - 4).Height(mainHeight).Render(content.String())
+		}
+
+		debugContent := o.debugPanel.View(o.width, debugPanelHeight)
+		return mainContent + "\n" + debugContent
+	} else {
+		// Full height when debug panel is hidden
+		if o.focused {
+			mainContent = o.focusedStyle.Width(o.width - 4).Height(o.height - 4).Render(content.String())
+		} else {
+			mainContent = o.unfocusedStyle.Width(o.width - 4).Height(o.height - 4).Render(content.String())
+		}
+		return mainContent
+	}
 }
 
 // GetContent returns the current outline as a string
@@ -405,6 +450,49 @@ func (o Outliner) GetContent() string {
 		result.WriteString(indent + "• " + line.Text + "\n")
 	}
 	return result.String()
+}
+
+// handleReducerUpdateMessage handles reducer update messages (Elm-style)
+func (o *Outliner) handleReducerUpdateMessage(msg ReducerUpdateMsg) {
+	// Debug: Log that message was received
+	o.debugPanel.AddMessage("REDUCER_UPDATE", fmt.Sprintf("Reducer '%s' collected: %s", msg.ReducerName, msg.Action.Content), DebugLevelSuccess)
+
+	// Find the reducer node in the outline
+	for i, line := range o.lines {
+		if line.PatternType == "reducer" && strings.Contains(line.Text, msg.ReducerName) {
+			// Mark reducer as having children
+			o.lines[i].HasChildren = true
+			o.lines[i].Collapsed = false // Start expanded so user can see collection happening
+
+			// Create child node for the collected action
+			childNode := OutlineNode{
+				ID:          generateNodeID(),
+				Text:        fmt.Sprintf("%s: %s", msg.Action.PatternType, msg.Action.Content),
+				Level:       line.Level + 1,
+				Collapsed:   false,
+				HasChildren: false,
+				CreatedAt:   time.Now(),
+				ModifiedAt:  time.Now(),
+				PatternType: msg.Action.PatternType,
+				Metadata:    msg.Action.Metadata,
+				Captured:    true, // Already captured by reducer
+			}
+
+			// Insert child node after the reducer (expand downward for now)
+			// TODO: Implement upward expansion to avoid cursor displacement
+			insertIndex := i + 1
+
+			// Skip existing children to insert at the end
+			for insertIndex < len(o.lines) && o.lines[insertIndex].Level > line.Level {
+				insertIndex++
+			}
+
+			// Insert the new child
+			o.lines = append(o.lines[:insertIndex], append([]OutlineNode{childNode}, o.lines[insertIndex:]...)...)
+
+			break
+		}
+	}
 }
 
 // SetContent loads content into the outliner
@@ -557,7 +645,32 @@ func (o *Outliner) handleReducerPattern(pattern ConsciousnessPattern, nodeID str
 		content := strings.ToLower(action.Content)
 		queryLower := strings.ToLower(query)
 
-		// Simple keyword matching - could be much more sophisticated
+		// Parse query for keywords and pattern types
+		// Example: "collect all actions that mention test" -> look for "test" in content
+		// Example: "collect all bridges about rangle" -> look for bridges with "rangle"
+
+		// Extract keywords after "about" or "that mention"
+		var keywords []string
+		if strings.Contains(queryLower, "about ") {
+			parts := strings.Split(queryLower, "about ")
+			if len(parts) > 1 {
+				keywords = strings.Fields(parts[1])
+			}
+		} else if strings.Contains(queryLower, "that mention ") {
+			parts := strings.Split(queryLower, "that mention ")
+			if len(parts) > 1 {
+				keywords = strings.Fields(parts[1])
+			}
+		}
+
+		// Check if content contains any of the keywords
+		for _, keyword := range keywords {
+			if strings.Contains(content, keyword) {
+				return true
+			}
+		}
+
+		// Legacy hardcoded patterns for backward compatibility
 		if strings.Contains(queryLower, "bridges") && action.PatternType == "bridge" {
 			return true
 		}

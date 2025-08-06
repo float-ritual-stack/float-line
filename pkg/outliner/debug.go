@@ -43,10 +43,10 @@ type ConsciousnessDebugPanel struct {
 
 // NewConsciousnessDebugPanel creates a new debug panel
 func NewConsciousnessDebugPanel() *ConsciousnessDebugPanel {
-	return &ConsciousnessDebugPanel{
+	cdp := &ConsciousnessDebugPanel{
 		messages:    []DebugMessage{},
-		maxMessages: 50, // Keep last 50 messages
-		visible:     false,
+		maxMessages: 50,   // Keep last 50 messages
+		visible:     true, // Start visible for debugging
 
 		panelStyle: lipgloss.NewStyle().
 			Border(lipgloss.RoundedBorder()).
@@ -71,6 +71,11 @@ func NewConsciousnessDebugPanel() *ConsciousnessDebugPanel {
 		errorStyle: lipgloss.NewStyle().
 			Foreground(lipgloss.Color("9")), // red
 	}
+
+	// Add startup message
+	cdp.AddMessage("SYSTEM", "🧠 Consciousness Debug Panel initialized", DebugLevelInfo)
+
+	return cdp
 }
 
 // AddMessage adds a new debug message
