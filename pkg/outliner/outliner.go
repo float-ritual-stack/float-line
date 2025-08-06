@@ -57,7 +57,7 @@ type Outliner struct {
 
 	// FLOAT.dispatch system
 	dispatch   *FloatDispatchSystem
-	debugPanel *ConsciousnessDebugPanel
+	debugPanel *InteractiveDebugPanel
 
 	// Reducer update channel for Elm-style message passing
 	reducerUpdates chan ReducerUpdateMsg
@@ -112,7 +112,7 @@ func New() Outliner {
 		parser:     NewParser(),
 		evna:       NewEvnaDispatcher(),
 		dispatch:   NewFloatDispatchSystem(),
-		debugPanel: NewConsciousnessDebugPanel(),
+		debugPanel: NewInteractiveDebugPanel(),
 
 		// Elm-style message channel
 		reducerUpdates: make(chan ReducerUpdateMsg, 100),
@@ -186,6 +186,21 @@ func (o *Outliner) SetSize(width, height int) {
 
 // Update handles key presses and other messages
 func (o Outliner) Update(msg tea.Msg) (Outliner, tea.Cmd) {
+	// Always handle window size messages
+	if _, ok := msg.(tea.WindowSizeMsg); ok {
+		if o.debugPanel.IsVisible() {
+			cmd := o.debugPanel.Update(msg)
+			return o, cmd
+		}
+	}
+
+	// If debug panel is focused, send all messages to it first
+	if o.debugPanel.IsVisible() && o.debugPanel.Focused() {
+		cmd := o.debugPanel.Update(msg)
+		return o, cmd
+	}
+
+	// Otherwise, only process messages when outliner is focused
 	if !o.focused {
 		return o, nil
 	}
@@ -299,6 +314,16 @@ func (o Outliner) Update(msg tea.Msg) (Outliner, tea.Cmd) {
 		case "ctrl+l":
 			// Toggle debug panel (log)
 			o.debugPanel.Toggle()
+
+		case "ctrl+shift+l":
+			// Toggle focus on debug panel
+			if o.debugPanel.IsVisible() {
+				if o.debugPanel.Focused() {
+					o.debugPanel.Blur()
+				} else {
+					o.debugPanel.Focus()
+				}
+			}
 		default:
 			// Handle regular character input
 			if len(msg.String()) == 1 {
@@ -423,12 +448,14 @@ func (o Outliner) View() string {
 		debugPanelHeight := o.height / 3
 		mainHeight = o.height - debugPanelHeight - 4
 
-		if o.focused {
+		// Style the main content based on focus state
+		if o.focused && !o.debugPanel.Focused() {
 			mainContent = o.focusedStyle.Width(o.width - 4).Height(mainHeight).Render(content.String())
 		} else {
 			mainContent = o.unfocusedStyle.Width(o.width - 4).Height(mainHeight).Render(content.String())
 		}
 
+		// Render debug panel with appropriate focus
 		debugContent := o.debugPanel.View(o.width, debugPanelHeight)
 		return mainContent + "\n" + debugContent
 	} else {
