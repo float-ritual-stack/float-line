@@ -245,6 +245,11 @@ func (p *Parser) detectConsciousnessPatterns(line string, lineNum int, result *S
 		"project":   regexp.MustCompile(`project::\s*(.+)`),
 		"concept":   regexp.MustCompile(`concept::\s*(.+)`),
 		"aka":       regexp.MustCompile(`aka::\s*(.+)`),
+		// FLOAT system patterns
+		"dispatch": regexp.MustCompile(`dispatch::\s*(.+)`),
+		"reducer":  regexp.MustCompile(`reducer::\s*(.+)`),
+		"selector": regexp.MustCompile(`selector::\s*(.+)`),
+		"imprint":  regexp.MustCompile(`imprint::\s*(.+)`),
 	}
 
 	for patternType, regex := range patterns {

@@ -57,12 +57,18 @@ type ConsciousnessSelector struct {
 	Output    string                                          // Current computed output
 }
 
+// ReducerUpdateCallback is called when a reducer collects a new action
+type ReducerUpdateCallback func(reducerName string, action DispatchAction)
+
 // FloatDispatchSystem is the core consciousness compiler
 type FloatDispatchSystem struct {
 	imprints  map[string]*Imprint
 	reducers  map[string]*ConsciousnessReducer
 	selectors map[string]*ConsciousnessSelector
 	actions   []DispatchAction
+
+	// Callback for visual tree updates
+	onReducerUpdate ReducerUpdateCallback
 
 	// Built-in imprints
 	techcraft       *Imprint
@@ -85,6 +91,11 @@ func NewFloatDispatchSystem() *FloatDispatchSystem {
 	fds.initializeImprints()
 
 	return fds
+}
+
+// SetReducerUpdateCallback sets the callback for reducer updates
+func (fds *FloatDispatchSystem) SetReducerUpdateCallback(callback ReducerUpdateCallback) {
+	fds.onReducerUpdate = callback
 }
 
 // initializeImprints sets up the core FLOAT imprints
@@ -240,9 +251,14 @@ func (fds *FloatDispatchSystem) AddSelector(name string, inputs []string, transf
 
 // updateReducers updates all reducers with new action
 func (fds *FloatDispatchSystem) updateReducers(action DispatchAction) {
-	for _, reducer := range fds.reducers {
+	for name, reducer := range fds.reducers {
 		if reducer.Matcher(action) {
 			reducer.Actions = append(reducer.Actions, action)
+
+			// Notify visual tree of update
+			if fds.onReducerUpdate != nil {
+				fds.onReducerUpdate(name, action)
+			}
 		}
 	}
 }
@@ -336,4 +352,14 @@ func (fds *FloatDispatchSystem) RenderDispatchSummary() string {
 	}
 
 	return summary.String()
+}
+
+// GetReducers returns all reducers (for testing)
+func (fds *FloatDispatchSystem) GetReducers() map[string]*ConsciousnessReducer {
+	return fds.reducers
+}
+
+// GetActions returns all dispatched actions (for testing)
+func (fds *FloatDispatchSystem) GetActions() []DispatchAction {
+	return fds.actions
 }

@@ -9,6 +9,10 @@ import (
 	"github.com/spf13/cobra"
 )
 
+var (
+	testScenario string
+)
+
 var rootCmd = &cobra.Command{
 	Use:   "float-outliner [file|directory]",
 	Short: "A consciousness-enabled outliner with :: pattern detection",
@@ -26,6 +30,16 @@ func runOutliner(cmd *cobra.Command, args []string) {
 		path = args[0]
 	}
 
+	// Handle test scenarios
+	if testScenario != "" {
+		path = createTestScenario(testScenario)
+		if path == "" {
+			fmt.Printf("Unknown test scenario: %s\n", testScenario)
+			fmt.Println("Available scenarios: reducer-basic, reducer-complex, patterns-all")
+			os.Exit(1)
+		}
+	}
+
 	app := NewOutlinerApp(path)
 
 	p := tea.NewProgram(app, tea.WithAltScreen())
@@ -33,6 +47,76 @@ func runOutliner(cmd *cobra.Command, args []string) {
 		fmt.Printf("Error running outliner: %v\n", err)
 		os.Exit(1)
 	}
+}
+
+func init() {
+	rootCmd.Flags().StringVar(&testScenario, "test", "", "Create test scenario (reducer-basic, reducer-complex, patterns-all)")
+}
+
+// createTestScenario creates a test file for the specified scenario
+func createTestScenario(scenario string) string {
+	var content string
+	var filename string
+
+	switch scenario {
+	case "reducer-basic":
+		filename = "test-reducer-basic.md"
+		content = `# Reducer Basic Test
+
+• reducer:: test collect all actions that mention test
+
+• dispatch:: test pattern one
+• dispatch:: test pattern two  
+• eureka:: test breakthrough!
+• decision:: use test approach [priority:: high]
+
+• dispatch:: unrelated pattern (should not be collected)
+`
+
+	case "reducer-complex":
+		filename = "test-reducer-complex.md"
+		content = `# Reducer Complex Test
+
+• reducer:: door_patterns collect all actions that are bridges or dispatches about door
+• reducer:: tech_stuff collect all decisions and gotchas about technology
+
+• bridge:: [[door]] connects to [[consciousness-tech]] [bridge-id:: DOOR-001]
+• dispatch:: [[door]] system implementation
+• decision:: implement [[technology]] stack [priority:: high]
+• gotcha:: [[technology]] requires careful setup [fix:: documentation]
+• eureka:: unrelated insight (should not be collected)
+
+• selector:: (door_patterns, tech_stuff) => implementation guide for door tech
+`
+
+	case "patterns-all":
+		filename = "test-patterns-all.md"
+		content = `# All Patterns Test
+
+• ctx:: 2025-08-05 6:00pm [project:: [[test-project]]] [mode:: testing]
+• eureka:: All patterns working! [concept:: [[consciousness-tech]]]
+• decision:: Test all pattern types [priority:: high]
+• highlight:: This is important for testing [importance:: critical]
+• gotcha:: Debug panel needs to be visible [fix:: check-visibility]
+• bridge:: [[test-project]] connects to [[consciousness-tech]] [bridge-id:: TEST-001]
+• dispatch:: raw consciousness fragment [sigil:: ⚡] [imprint:: techcraft]
+
+• reducer:: test_patterns collect all actions about test
+• selector:: (test_patterns) => test summary report
+`
+
+	default:
+		return ""
+	}
+
+	// Write test file
+	if err := os.WriteFile(filename, []byte(content), 0644); err != nil {
+		fmt.Printf("Error creating test file: %v\n", err)
+		return ""
+	}
+
+	fmt.Printf("Created test scenario: %s\n", filename)
+	return filename
 }
 
 func main() {

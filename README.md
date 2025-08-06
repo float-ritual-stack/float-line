@@ -128,6 +128,8 @@ Compute derived state from reducers:
 
 ## 🎨 Example Session
 
+![Float Outliner Screenshot](screenshot.png)
+
 ```markdown
 # My Consciousness Session
 
