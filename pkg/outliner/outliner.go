@@ -142,12 +142,17 @@ func New() Outliner {
 
 	// Set up reducer update callback for Elm-style message passing
 	o.dispatch.SetReducerUpdateCallback(func(reducerName string, action DispatchAction) {
+		// Debug: Log callback firing
+		o.debugPanel.AddMessage("CALLBACK_FIRED", fmt.Sprintf("Sending message for reducer '%s'", reducerName), DebugLevelInfo)
+
 		// Send message through channel instead of direct mutation
 		select {
 		case o.reducerUpdates <- ReducerUpdateMsg{ReducerName: reducerName, Action: action}:
 			// Message sent successfully
+			o.debugPanel.AddMessage("MESSAGE_SENT", fmt.Sprintf("Message sent for reducer '%s'", reducerName), DebugLevelSuccess)
 		default:
 			// Channel full, skip this update (non-blocking)
+			o.debugPanel.AddMessage("CHANNEL_FULL", fmt.Sprintf("Channel full, skipped update for reducer '%s'", reducerName), DebugLevelError)
 		}
 	})
 
@@ -314,15 +319,21 @@ func (o Outliner) Update(msg tea.Msg) (Outliner, tea.Cmd) {
 		case "ctrl+l":
 			// Toggle debug panel (log)
 			o.debugPanel.Toggle()
+			o.debugPanel.AddMessage("KEY_BINDING", "Ctrl+L pressed - toggled debug panel", DebugLevelInfo)
 
 		case "ctrl+shift+l":
 			// Toggle focus on debug panel
+			o.debugPanel.AddMessage("KEY_BINDING", "Ctrl+Shift+L pressed", DebugLevelInfo)
 			if o.debugPanel.IsVisible() {
 				if o.debugPanel.Focused() {
 					o.debugPanel.Blur()
+					o.debugPanel.AddMessage("FOCUS", "Debug panel blurred", DebugLevelInfo)
 				} else {
 					o.debugPanel.Focus()
+					o.debugPanel.AddMessage("FOCUS", "Debug panel focused", DebugLevelSuccess)
 				}
+			} else {
+				o.debugPanel.AddMessage("FOCUS", "Debug panel not visible, cannot focus", DebugLevelError)
 			}
 		default:
 			// Handle regular character input
@@ -343,6 +354,9 @@ func (o Outliner) Update(msg tea.Msg) (Outliner, tea.Cmd) {
 		}
 
 	case ReducerUpdateMsg:
+		// Debug: Log message received
+		o.debugPanel.AddMessage("MESSAGE_RECEIVED", fmt.Sprintf("Processing reducer update for '%s'", msg.ReducerName), DebugLevelInfo)
+
 		// Handle reducer update message (Elm-style)
 		o.handleReducerUpdateMessage(msg)
 		return o, o.listenForReducerUpdates() // Continue listening
